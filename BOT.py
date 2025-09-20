@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 #
 # --------------------------------------------------------------------------------
 VERIFIED_ROLE_NAME = "✶ ⁞𝓥𝓮𝓻𝓲𝓯𝓲𝓮𝓭 ·"  # The name for the role given to users who pass /reddit_verify
+VERIFIED_ROLE_ID = 1407582403375136829  # Replace with the Role ID you just copied
 DEFAULT_PING_ROLE_NAME = VERIFIED_ROLE_NAME # The default role to ping for new tasks.
 DEFAULT_ANNOUNCE_CHANNEL_ID = 1418471239504101487  # Replace with your task announcement channel ID
 DEFAULT_LOGS_CHANNEL_ID = 1418601049471848488      # Replace with your bot logs channel ID
@@ -392,6 +393,10 @@ class TaskBot(commands.Bot):
     async def task_allocation_loop_impl(self):
         """Implementation of the main task allocation logic"""
         logger.info(f"--- Task Loop Cycle --- Current Task: #{self.current_task}/{self.total_tasks} ---")
+        # Immediately exit if a stop has been requested. This prevents a race condition.
+        if self.stop_requested:
+            logger.info("Loop cycle aborted: stop_requested flag is True.")
+            return
         if self.is_paused:
             logger.info("Task allocation is paused. Skipping this cycle.")
             return
@@ -447,6 +452,23 @@ class TaskBot(commands.Bot):
             await message.add_reaction('✅')
             logger.info(f"Task announcement posted in #{self.announce_channel.name} (Message ID: {message.id}). Waiting {self.reaction_time}s for reactions.")
             
+            # --- PING LOGIC (Using Role ID for reliability) ---
+            role_to_ping = self.announce_channel.guild.get_role(VERIFIED_ROLE_ID)
+            if role_to_ping:
+               try:
+                  await self.announce_channel.send(content=role_to_ping.mention, delete_after=1)
+                  logger.info(f"Role ping sent for {role_to_ping.name}")
+               except discord.Forbidden:
+                  logger.error("Failed to send role ping: Missing 'Manage Messages' permission for delete_after.")
+                  await self.send_log("⚠️ **Ping Failed:** The bot needs the **`Manage Messages`** permission in the task channel to send and delete pings.")
+               except Exception as ping_error:
+                  logger.error(f"Failed to send role ping: {ping_error}")
+                  await self.send_log(f"⚠️ An unknown error occurred while sending the role ping.")
+            else:
+               logger.warning(f"Role with ID '{VERIFIED_ROLE_ID}' not found!")
+               await self.send_log(f"⚠️ **Ping Failed:** Could not find the role with ID `{VERIFIED_ROLE_ID}`. Please check the hardcoded configuration.")
+        # --- END OF PING LOGIC ---
+
             await asyncio.sleep(self.reaction_time)
             # Gracefully exit if a stop was requested during the sleep period
             if self.stop_requested:
