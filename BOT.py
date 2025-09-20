@@ -507,7 +507,22 @@ class TaskBot(commands.Bot):
                     logger.warning("No winners were successfully assigned despite eligible reactors.")
             else:
                 logger.info("No eligible reactors found for this task.")
-                await self.announce_channel.send(f"> ⚠️︱Task #{starting_task_num} was unclaimed. It will be reposted in **{self.interval_minutes} minutes**.")
+                
+                # Create a professional-looking embed for the unclaimed task notification
+                unclaimed_tasks_str = f"Task #{starting_task_num}" if tasks_this_round == 1 else f"Tasks #{starting_task_num}-#{starting_task_num + tasks_this_round - 1}"
+                minutes_str = f"{self.interval_minutes} minute{'s' if self.interval_minutes > 1 else ''}"
+
+                embed = discord.Embed(
+                    title="⚠️ Task Unclaimed",
+                    description="No one claimed the available task(s) within the time limit.",
+                    color=discord.Color.orange(),
+                    timestamp=datetime.now(timezone.utc)
+                )
+                embed.add_field(name="Details", value=f"**{unclaimed_tasks_str}** received no reactions.", inline=False)
+                embed.add_field(name="Next Step", value=f"Reposting in **{minutes_str}**.", inline=False)
+                embed.set_footer(text=f"Task Bot | {datetime.now().strftime('%d %B %Y')}")
+                
+                await self.announce_channel.send(embed=embed)
             
             del self.reaction_timestamps[message.id]
         except Exception as e:
