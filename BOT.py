@@ -59,7 +59,7 @@ logger = logging.getLogger(__name__)
 #
 # --------------------------------------------------------------------------------
 VERIFIED_ROLE_NAME = "✶ ⁞𝓥𝓮𝓻𝓲𝓯𝓲𝓮𝓭 ·"  # The name for the role given to users who pass /reddit_verify
-VERIFIED_ROLE_ID = 1407582403375136829  # Replace with the Role ID you just copied
+VERIFIED_ROLE_ID = 1407582403375136829  # Replace with the Role ID of the role above
 DEFAULT_PING_ROLE_NAME = VERIFIED_ROLE_NAME # The default role to ping for new tasks.
 DEFAULT_ANNOUNCE_CHANNEL_ID = 1418471239504101487  # Replace with your task announcement channel ID
 DEFAULT_LOGS_CHANNEL_ID = 1418601049471848488      # Replace with your bot logs channel ID
@@ -160,11 +160,9 @@ class TaskBot(commands.Bot):
     
     
     async def setup_hook(self):
-        """Initialize connections and tasks"""
+        """Initialize connections"""
         logger.info("Running setup_hook...")
         await self.setup_google_sheets()
-        # FIXED: The loop is now created here to ensure everything is ready.
-        
         
     async def setup_google_sheets(self):
         """Initialize Google Sheets API connection"""
@@ -185,27 +183,11 @@ class TaskBot(commands.Bot):
         logger.info(f'Logged in as {self.user} (ID: {self.user.id})')
         logger.info(f'Bot is in {len(self.guilds)} servers.')
 
-        # --- START OF DIAGNOSTIC CODE ---
-        print("\n--- CHANNEL DEBUGGING ---")
+        # Fetch hardcoded channels
+        self.announce_channel = self.get_channel(DEFAULT_ANNOUNCE_CHANNEL_ID)
+        self.logs_channel = self.get_channel(DEFAULT_LOGS_CHANNEL_ID)
+        self.verification_channel = self.get_channel(DEFAULT_VERIFICATION_CHANNEL_ID)
         
-        # 1. Fetch Announce Channel
-        announce_obj = self.get_channel(DEFAULT_ANNOUNCE_CHANNEL_ID)
-        self.announce_channel = announce_obj if isinstance(announce_obj, discord.TextChannel) else None
-        print(f"Announce Channel ID ({DEFAULT_ANNOUNCE_CHANNEL_ID}): Found object -> {self.announce_channel}")
-        
-        # 2. Fetch Logs Channel
-        logs_obj = self.get_channel(DEFAULT_LOGS_CHANNEL_ID)
-        self.logs_channel = logs_obj if isinstance(logs_obj, discord.TextChannel) else None
-        print(f"Logs Channel ID ({DEFAULT_LOGS_CHANNEL_ID}): Found object -> {self.logs_channel}")
-        
-        # 3. Fetch Verification Channel
-        verification_obj = self.get_channel(DEFAULT_VERIFICATION_CHANNEL_ID)
-        self.verification_channel = verification_obj if isinstance(verification_obj, discord.TextChannel) else None
-        print(f"Verification Channel ID ({DEFAULT_VERIFICATION_CHANNEL_ID}): Found object -> {self.verification_channel}")
-
-        print("--- END OF DIAGNOSTIC CODE ---\n")
-        # --- END OF DIAGNOSTIC CODE ---
-
         if not self.announce_channel:
             logger.error(f"FATAL: Could not find announce channel with ID {DEFAULT_ANNOUNCE_CHANNEL_ID}. Please check the ID and bot permissions.")
         if not self.logs_channel:
@@ -216,12 +198,38 @@ class TaskBot(commands.Bot):
         # Mark as configured if essential channels are found
         if self.announce_channel and self.logs_channel and self.sheet_url:
             self.configured = True
-            logger.info("Bot is configured and ready.")
+            logger.info("Bot is configured with hardcoded default values.")
 
         if not self.commands_synced:
             await self.sync_commands()
             self.commands_synced = True
-            
+        
+        # --- FIXED: Clean up any lingering roles on startup ---
+        await self.cleanup_lingering_roles()
+
+    async def cleanup_lingering_roles(self):
+        """Finds and removes the task role from all members on startup."""
+        logger.info("Performing startup cleanup of lingering task roles...")
+        for guild in self.guilds:
+            task_role = discord.utils.get(guild.roles, name=TASK_ROLE_NAME)
+            if task_role:
+                members_with_role = task_role.members
+                if not members_with_role:
+                    logger.info(f"No members with the '{TASK_ROLE_NAME}' role found in '{guild.name}'.")
+                    continue
+
+                logger.warning(f"Found {len(members_with_role)} member(s) with lingering task roles in '{guild.name}'. Removing them...")
+                for member in members_with_role:
+                    try:
+                        await member.remove_roles(task_role, reason="Bot startup cleanup")
+                        logger.info(f"Removed role from {member.name}.")
+                        await asyncio.sleep(1) # Sleep to avoid rate limits on large servers
+                    except discord.Forbidden:
+                        logger.error(f"Failed to remove role from {member.name} in '{guild.name}': Missing Permissions.")
+                    except discord.HTTPException as e:
+                        logger.error(f"Failed to remove role from {member.name} in '{guild.name}': {e}")
+        logger.info("Startup role cleanup complete.")
+
     async def sync_commands(self):
         """Sync slash commands"""
         try:
@@ -349,12 +357,13 @@ class TaskBot(commands.Bot):
         await asyncio.sleep(self.role_removal_hours * 3600)
         logger.info(f"Attempting to remove role '{role.name}' from {member.name} now.")
         try:
+            # Re-fetch member to handle cases where they might leave and rejoin
             guild = member.guild
-            member = await guild.fetch_member(member.id)
-            if role in member.roles:
-                await member.remove_roles(role, reason=f"TaskBot: Timed {self.role_removal_hours}-hour removal")
-                logger.info(f"Removed '{role.name}' from {member.name}.")
-                await self.send_log(f"Role '{TASK_ROLE_NAME}' removed from {member.mention} after {self.role_removal_hours} hours.")
+            updated_member = await guild.fetch_member(member.id)
+            if role in updated_member.roles:
+                await updated_member.remove_roles(role, reason=f"TaskBot: Timed {self.role_removal_hours}-hour removal")
+                logger.info(f"Removed '{role.name}' from {updated_member.name}.")
+                await self.send_log(f"Role '{TASK_ROLE_NAME}' removed from {updated_member.mention} after {self.role_removal_hours} hours.")
             else:
                 logger.warning(f"Role '{role.name}' was already removed from {member.name}.")
         except discord.NotFound:
@@ -366,7 +375,6 @@ class TaskBot(commands.Bot):
         """Creates or restarts the task loop with the current interval."""
         logger.info("Creating or restarting task allocation loop...")
         
-        # If a loop is already running, stop it before creating a new one.
         if self.task_allocation_loop and self.task_allocation_loop.is_running():
             self.task_allocation_loop.cancel()
             logger.info("Existing task loop cancelled.")
@@ -455,25 +463,25 @@ class TaskBot(commands.Bot):
             # --- PING LOGIC (Using Role ID for reliability) ---
             role_to_ping = self.announce_channel.guild.get_role(VERIFIED_ROLE_ID)
             if role_to_ping:
-               try:
-                  await self.announce_channel.send(content=role_to_ping.mention, delete_after=1)
-                  logger.info(f"Role ping sent for {role_to_ping.name}")
-               except discord.Forbidden:
-                  logger.error("Failed to send role ping: Missing 'Manage Messages' permission for delete_after.")
-                  await self.send_log("⚠️ **Ping Failed:** The bot needs the **`Manage Messages`** permission in the task channel to send and delete pings.")
-               except Exception as ping_error:
-                  logger.error(f"Failed to send role ping: {ping_error}")
-                  await self.send_log(f"⚠️ An unknown error occurred while sending the role ping.")
+                try:
+                    await self.announce_channel.send(content=role_to_ping.mention, delete_after=1)
+                    logger.info(f"Role ping sent for {role_to_ping.name}")
+                except discord.Forbidden:
+                    logger.error("Failed to send role ping: Missing 'Manage Messages' permission for delete_after.")
+                    await self.send_log("⚠️ **Ping Failed:** The bot needs the **`Manage Messages`** permission in the task channel to send and delete pings.")
+                except Exception as ping_error:
+                    logger.error(f"Failed to send role ping: {ping_error}")
+                    await self.send_log(f"⚠️ An unknown error occurred while sending the role ping.")
             else:
-               logger.warning(f"Role with ID '{VERIFIED_ROLE_ID}' not found!")
-               await self.send_log(f"⚠️ **Ping Failed:** Could not find the role with ID `{VERIFIED_ROLE_ID}`. Please check the hardcoded configuration.")
-        # --- END OF PING LOGIC ---
+                logger.warning(f"Role with ID '{VERIFIED_ROLE_ID}' not found!")
+                await self.send_log(f"⚠️ **Ping Failed:** Could not find the role with ID `{VERIFIED_ROLE_ID}`. Please check the hardcoded configuration.")
+            # --- END OF PING LOGIC ---
 
             await asyncio.sleep(self.reaction_time)
             # Gracefully exit if a stop was requested during the sleep period
             if self.stop_requested:
-               logger.info("Stop command received during reaction period. Halting current task cycle.")
-               return
+                logger.info("Stop command received during reaction period. Halting current task cycle.")
+                return
             
             # Process reactions
             logger.info(f"Reaction period ended for message {message.id}. Processing reactions.")
@@ -556,7 +564,6 @@ class TaskBot(commands.Bot):
             logger.critical(f"A critical error occurred in the task allocation loop: {e}", exc_info=True)
 
 
-    # @task_allocation_loop_impl.before_loop
     async def before_task_loop(self):
         """Wait for bot ready"""
         logger.info("Task loop is waiting for the bot to be ready...")
@@ -607,13 +614,13 @@ def admin_only():
 
 @bot.tree.command(name="configure_settings", description="Optionally override the bot's hardcoded settings (Admin only)")
 @app_commands.describe(
-    interval_minutes="Override the default time between tasks in minutes.",
-    role_removal_hours="Override the default hours before the TaskHolder role is removed.",
-    reaction_time="Override the default time users have to react in seconds.",
-    announce_channel="Override the default task announcement channel.",
-    logs_channel="Override the default bot logs channel.",
-    sheets_url="Override the default Google Sheets URL.",
-    ping_role_name="Override the default role to ping for new tasks."
+    interval_minutes=f"Override the time between tasks in minutes (Default: {DEFAULT_INTERVAL_MINUTES}).",
+    role_removal_hours=f"Override hours before the TaskHolder role is removed (Default: {DEFAULT_ROLE_REMOVAL_HOURS}).",
+    reaction_time=f"Override time users have to react in seconds (Default: {DEFAULT_REACTION_TIME_SECONDS}).",
+    announce_channel="Override the default task announcement channel (Set by ID in the code).",
+    logs_channel="Override the default bot logs channel (Set by ID in the code).",
+    sheets_url="Override the default Google Sheets URL (Set in the code).",
+    ping_role_name=f"Override the default role to ping for new tasks (Default: \"{DEFAULT_PING_ROLE_NAME}\")."
 )
 @admin_only()
 async def configure_settings(
@@ -666,6 +673,11 @@ async def configure_settings(
 
     bot.configured = True
     
+    # --- FIXED: Restart the loop if the interval was changed and the loop is active ---
+    if interval_minutes is not None and bot.task_allocation_loop and bot.task_allocation_loop.is_running():
+        logger.info("Interval was changed, restarting the task loop to apply it.")
+        await bot.restart_task_loop()
+    
     await interaction.followup.send("✅ Bot settings updated successfully! Any unset options will use the hardcoded defaults.", ephemeral=True)
 
 @bot.tree.command(name="create_task", description="Create and start task allocation (Admin only)")
@@ -697,6 +709,7 @@ async def create_task(
     bot.winners_per_task = winners_per_task if winners_per_task is not None else DEFAULT_WINNERS_PER_TASK
     bot.task_type = task_type
     bot.is_paused = False
+    bot.stop_requested = False
     bot.task_description = description if description else ""
     
     await interaction.followup.send(f"✅ Task allocation started for {tasks} tasks!")
