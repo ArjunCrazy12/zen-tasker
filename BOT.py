@@ -198,13 +198,12 @@ class TaskBot(commands.Bot):
         # Mark as configured if essential channels are found
         if self.announce_channel and self.logs_channel and self.sheet_url:
             self.configured = True
-            logger.info("Bot is configured with hardcoded default values.")
+            logger.info("Bot is configured and ready.")
 
         if not self.commands_synced:
             await self.sync_commands()
             self.commands_synced = True
         
-        # --- FIXED: Clean up any lingering roles on startup ---
         await self.cleanup_lingering_roles()
 
     async def cleanup_lingering_roles(self):
@@ -213,7 +212,7 @@ class TaskBot(commands.Bot):
         for guild in self.guilds:
             task_role = discord.utils.get(guild.roles, name=TASK_ROLE_NAME)
             if task_role:
-                members_with_role = task_role.members
+                members_with_role = list(task_role.members) # Create a copy to iterate over
                 if not members_with_role:
                     logger.info(f"No members with the '{TASK_ROLE_NAME}' role found in '{guild.name}'.")
                     continue
@@ -379,7 +378,6 @@ class TaskBot(commands.Bot):
             self.task_allocation_loop.cancel()
             logger.info("Existing task loop cancelled.")
 
-        # Create a new loop instance. This ensures it's never None.
         self.task_allocation_loop = tasks.loop(minutes=self.interval_minutes)(self.task_allocation_loop_impl)
         self.task_allocation_loop.before_loop(self.before_task_loop)
         
@@ -401,7 +399,6 @@ class TaskBot(commands.Bot):
     async def task_allocation_loop_impl(self):
         """Implementation of the main task allocation logic"""
         logger.info(f"--- Task Loop Cycle --- Current Task: #{self.current_task}/{self.total_tasks} ---")
-        # Immediately exit if a stop has been requested. This prevents a race condition.
         if self.stop_requested:
             logger.info("Loop cycle aborted: stop_requested flag is True.")
             return
@@ -478,7 +475,6 @@ class TaskBot(commands.Bot):
             # --- END OF PING LOGIC ---
 
             await asyncio.sleep(self.reaction_time)
-            # Gracefully exit if a stop was requested during the sleep period
             if self.stop_requested:
                 logger.info("Stop command received during reaction period. Halting current task cycle.")
                 return
@@ -510,9 +506,10 @@ class TaskBot(commands.Bot):
 
                 winners_assigned = []
                 for i, winner_member in enumerate(winners):
-                    current_task_num = starting_task_num + i
-                    logger.info(f"Processing winner {i+1}: {winner_member.name} for Task #{current_task_num}")
+                    # FIXED: Added a try/except block to handle errors for individual winners
                     try:
+                        current_task_num = starting_task_num + i
+                        logger.info(f"Processing winner {i+1}: {winner_member.name} for Task #{current_task_num}")
                         if message.guild is not None:
                             role = await self.get_or_create_role(message.guild, TASK_ROLE_NAME)
                             await winner_member.add_roles(role, reason=f"TaskBot: Assigned Task #{current_task_num}")
@@ -527,7 +524,7 @@ class TaskBot(commands.Bot):
                         else:
                             logger.error("Cannot assign role: message.guild is None.")
                     except Exception as e:
-                        logger.error(f"Failed to process winner {winner_member.name}: {e}")
+                        logger.error(f"Failed to process winner {winner_member.name}: {e}. Skipping to next winner.")
 
                 if winners_assigned:
                     self.current_task += len(winners_assigned)
@@ -673,7 +670,7 @@ async def configure_settings(
 
     bot.configured = True
     
-    # --- FIXED: Restart the loop if the interval was changed and the loop is active ---
+    # --- Restart the loop if the interval was changed and the loop is active ---
     if interval_minutes is not None and bot.task_allocation_loop and bot.task_allocation_loop.is_running():
         logger.info("Interval was changed, restarting the task loop to apply it.")
         await bot.restart_task_loop()
@@ -756,7 +753,6 @@ async def resume_tasks(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     if bot.is_paused:
         bot.is_paused = False
-        bot.stop_requested = False
         logger.info("Task allocation resumed.")
         await bot.send_log(f"▶️ Task allocation resumed by {interaction.user.mention}.")
         await interaction.followup.send("✅ Task allocation has been resumed.", ephemeral=True)
