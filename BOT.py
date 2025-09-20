@@ -134,6 +134,7 @@ class TaskBot(commands.Bot):
         self.is_paused: bool = False
         self.task_description: str = ""
         self._role_removal_tasks = set()
+        self.stop_requested: bool = False
 
         
     async def get_member_safely(self, guild: discord.Guild, user_id: int) -> Optional[discord.Member]:
@@ -447,6 +448,10 @@ class TaskBot(commands.Bot):
             logger.info(f"Task announcement posted in #{self.announce_channel.name} (Message ID: {message.id}). Waiting {self.reaction_time}s for reactions.")
             
             await asyncio.sleep(self.reaction_time)
+            # Gracefully exit if a stop was requested during the sleep period
+            if self.stop_requested:
+               logger.info("Stop command received during reaction period. Halting current task cycle.")
+               return
             
             # Process reactions
             logger.info(f"Reaction period ended for message {message.id}. Processing reactions.")
@@ -686,6 +691,7 @@ async def test_bot(interaction: discord.Interaction):
 async def stop_tasks(interaction: discord.Interaction):
     logger.info(f"'/stop_tasks' invoked by '{interaction.user.name}'.")
     await interaction.response.defer(ephemeral=True)
+    bot.stop_requested = True
     if bot.task_allocation_loop and bot.task_allocation_loop.is_running():
         bot.task_allocation_loop.stop()
         logger.info("Task allocation stopped by admin command.")
@@ -715,6 +721,7 @@ async def resume_tasks(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     if bot.is_paused:
         bot.is_paused = False
+        bot.stop_requested = False
         logger.info("Task allocation resumed.")
         await bot.send_log(f"▶️ Task allocation resumed by {interaction.user.mention}.")
         await interaction.followup.send("✅ Task allocation has been resumed.", ephemeral=True)
