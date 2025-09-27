@@ -71,7 +71,7 @@ DEFAULT_INTERVAL_MINUTES = 1
 DEFAULT_REACTION_TIME_SECONDS = 10
 DEFAULT_ROLE_REMOVAL_HOURS = 6
 DEFAULT_WINNERS_PER_TASK = 1
-MINIMUM_REDDIT_KARMA = 100
+MINIMUM_REDDIT_KARMA = 500
 # --------------------------------------------------------------------------------
 
 # ─── Keep‑alive HTTP server ──────────────────────────────────────────────────
